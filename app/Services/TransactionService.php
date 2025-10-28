@@ -14,12 +14,31 @@ use Web3\Net;
 use Web3\Providers\HttpProvider;
 use Web3\Utils;
 use Web3p\EthereumTx\EIP1559Transaction;
+use Web3p\EthereumTx\Transaction;
 use Web3p\EthereumUtil\Util;
 
 
 class TransactionService extends Services
 {
     private int $timeout = 20;
+
+    /**
+     * 判断链是否支持 EIP-1559
+     */
+    private function supportsEIP1559(int $chainId): bool
+    {
+        // 支持 EIP-1559 的链
+        $eip1559Chains = [
+            1,       // Ethereum Mainnet
+            5,       // Goerli
+            11155111,// Sepolia
+            42161,   // Arbitrum One
+            421613,  // Arbitrum Goerli
+            43114,   // Avalanche
+            22776,   // MAP
+        ];
+        return in_array($chainId, $eip1559Chains);
+    }
 
     function confirmTx($eth, $txHash)
     {
@@ -154,11 +173,38 @@ class TransactionService extends Services
         $gasPrice = $this->gasPrice($eth);
         $gasPrice = $gasPrice->toString();
         $block = $this->getBlock($eth);
-        $lastBaseFeePerGas = $block['baseFeePerGas'];
-//        $maxPriorityFeePerGas = "1500000000";
-        $maxPriorityFeePerGas = "15000";
-        $maxFeePerGas = bcadd(bcmul($this->toDecimal($block['baseFeePerGas']), 2), $maxPriorityFeePerGas);
-        return ['lastBaseFeePerGas' => $this->toDecimal($lastBaseFeePerGas), 'maxFeePerGas' => $maxFeePerGas, 'maxPriorityFeePerGas' => $maxPriorityFeePerGas, 'gasPrice' => $gasPrice];
+
+        // 检查是否支持 EIP-1559 (是否有 baseFeePerGas 且值大于 0)
+        // BSC 会返回 baseFeePerGas: "0x0", 但它实际不支持 EIP-1559
+        if (isset($block['baseFeePerGas']) && $block['baseFeePerGas']) {
+            $baseFeeDecimal = $this->toDecimal($block['baseFeePerGas']);
+            if (bccomp($baseFeeDecimal, '0') > 0) {
+                // EIP-1559 链 (Ethereum, Sepolia, Arbitrum 等) - baseFeePerGas > 0
+                $lastBaseFeePerGas = $block['baseFeePerGas'];
+                $maxPriorityFeePerGas = "15000";
+                $maxFeePerGas = bcadd(bcmul($baseFeeDecimal, 2), $maxPriorityFeePerGas);
+                Log::info("[getFeeData][EIP-1559 chain][baseFee:$baseFeeDecimal wei][maxFee:$maxFeePerGas wei]");
+                return [
+                    'lastBaseFeePerGas' => $baseFeeDecimal,
+                    'maxFeePerGas' => $maxFeePerGas,
+                    'maxPriorityFeePerGas' => $maxPriorityFeePerGas,
+                    'gasPrice' => $gasPrice
+                ];
+            }
+        }
+
+        // 传统链 (BSC, KCC 等) - 设置足够高的 gas price
+        $minGasPrice = '30000000000'; // 30 Gwei - 确保 BSC 能快速打包
+        if (bccomp($gasPrice, $minGasPrice) < 0) {
+            Log::info("[getFeeData][Legacy chain][original:$gasPrice wei][boosted:$minGasPrice wei (30 Gwei)]");
+            $gasPrice = $minGasPrice;
+        }
+        return [
+            'gasPrice' => $gasPrice,
+            'lastBaseFeePerGas' => '0',
+            'maxFeePerGas' => '0',
+            'maxPriorityFeePerGas' => '0'
+        ];
     }
 
     public function decodeEvent($object, $signature_map, $ethAbi): array
@@ -257,22 +303,31 @@ class TransactionService extends Services
         $util = new Util();
         $eth = $contract->getEth();
         $chainId = $this->getChainId($provider);
+        $chainIdInt = base_convert($chainId, 16, 10);
         $from = $util->publicKeyToAddress($util->privateKeyToPublicKey($private_key));
         $data = call_user_func_array([$contract, 'getData'], $params);
         $fee_data = $this->getFeeData($eth);
+
+        // 判断链是否支持 EIP-1559
+        $useEIP1559 = $this->supportsEIP1559($chainIdInt);
+
         $transaction_param = [
             'nonce' => '0x' . base_convert($nonce, 10, 16),
             'from' => $from,
             'to' => $contract->getToAddress(),
             'value' => '0x0',
-//                'gasPrice' => '0x' . Utils::toWei('5', 'gwei')->toHex(),
-//                'gasPrice' => $this->toHex($fee_data['gasPrice']),
-            'maxPriorityFeePerGas' => $this->toHex($fee_data['maxPriorityFeePerGas']),
-            'maxFeePerGas' => $this->toHex($fee_data['maxFeePerGas']),
             'data' => '0x' . $data,
-            'chainId' => $chainId, // required
-            'accessList' => [],
+            'chainId' => $chainId,
         ];
+
+        if ($useEIP1559) {
+            $transaction_param['maxPriorityFeePerGas'] = $this->toHex($fee_data['maxPriorityFeePerGas']);
+            $transaction_param['maxFeePerGas'] = $this->toHex($fee_data['maxFeePerGas']);
+            $transaction_param['accessList'] = [];
+        } else {
+            $transaction_param['gasPrice'] = $this->toHex($fee_data['gasPrice']);
+        }
+
         $estimateGas = null;
         $params = array_merge($params, [
             $transaction_param,
@@ -286,8 +341,16 @@ class TransactionService extends Services
             }
         ]);
         call_user_func_array([$contract, 'estimateGas'], $params);
-        $transaction_param['gasLimit'] = '0x' . base_convert(bcmul($estimateGas, '1.2'), 10, 16);
-        $transaction = new EIP1559Transaction($transaction_param);
+
+        if ($useEIP1559) {
+            $transaction_param['gasLimit'] = '0x' . base_convert(bcmul($estimateGas, '1.2'), 10, 16);
+            $transaction = new EIP1559Transaction($transaction_param);
+        } else {
+            $transaction_param['gas'] = '0x' . base_convert(bcmul($estimateGas, '1.2'), 10, 16);
+            $transaction_param['chainId'] = $chainIdInt;
+            $transaction = new Transaction($transaction_param);
+        }
+
         $transaction->sign($private_key);
         $txHash = null;
         $eth->sendRawTransaction('0x' . $transaction->serialize(), function ($err, $tx) use ($eth, $from, &$txHash) {
@@ -316,24 +379,41 @@ class TransactionService extends Services
         $util = new Util();
         $eth = new Eth($provider);
         $chainId = $this->getChainId($provider);
+        $chainIdInt = base_convert($chainId, 16, 10);
         $from = $util->publicKeyToAddress($util->privateKeyToPublicKey($private_key));
         $fee_data = $this->getFeeData($eth);
+
+        // 判断链是否支持 EIP-1559
+        $useEIP1559 = $this->supportsEIP1559($chainIdInt);
+
         $transaction_param = [
             'nonce' => '0x' . base_convert($nonce, 10, 16),
             'from' => $from,
             'to' => $to,
             'value' => $amount,
-//                'gasPrice' => '0x' . Utils::toWei('5', 'gwei')->toHex(),
-//                'gasPrice' => $this->toHex($fee_data['gasPrice']),
-            'maxPriorityFeePerGas' => $this->toHex($fee_data['maxPriorityFeePerGas']),
-            'maxFeePerGas' => $this->toHex($fee_data['maxFeePerGas']),
             'data' => $data,
-            'chainId' => $chainId, // required
-            'accessList' => [],
+            'chainId' => $chainId,
         ];
-        $estimateGas = $this->estimateGas($provider, $transaction_param);
-        $transaction_param['gasLimit'] = '0x' . base_convert(bcmul($estimateGas, '1.2'), 10, 16);
-        $transaction = new EIP1559Transaction($transaction_param);
+
+        if ($useEIP1559) {
+            // EIP-1559 交易 (Ethereum, Sepolia, Arbitrum 等)
+            $transaction_param['maxPriorityFeePerGas'] = $this->toHex($fee_data['maxPriorityFeePerGas']);
+            $transaction_param['maxFeePerGas'] = $this->toHex($fee_data['maxFeePerGas']);
+            $transaction_param['accessList'] = [];
+            $estimateGas = $this->estimateGas($provider, $transaction_param);
+            $transaction_param['gasLimit'] = '0x' . base_convert(bcmul($estimateGas, '1.2'), 10, 16);
+            $transaction = new EIP1559Transaction($transaction_param);
+            Log::info("[sendTransactionWithData][EIP1559][chain:$chainIdInt][gasLimit:{$transaction_param['gasLimit']}]");
+        } else {
+            // 传统交易 (BSC, KCC 等)
+            $transaction_param['gasPrice'] = $this->toHex($fee_data['gasPrice']);
+            $estimateGas = $this->estimateGas($provider, $transaction_param);
+            $transaction_param['gas'] = '0x' . base_convert(bcmul($estimateGas, '1.2'), 10, 16);
+            $transaction_param['chainId'] = $chainIdInt; // 传统交易需要整数型 chainId
+            $transaction = new Transaction($transaction_param);
+            Log::info("[sendTransactionWithData][Legacy][chain:$chainIdInt][gasPrice:{$transaction_param['gasPrice']}][gas:{$transaction_param['gas']}]");
+        }
+
         $transaction->sign($private_key);
         $txHash = null;
         $eth->sendRawTransaction('0x' . $transaction->serialize(), function ($err, $tx) use ($eth, $from, &$txHash) {
