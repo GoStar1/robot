@@ -131,7 +131,14 @@ class ExecuteTaskJob implements ShouldQueue
                 $task_trans->retry++;
                 $rpc = (new ChainRpc())->getProviderUrl($task_trans->chain);
                 $provider = new HttpProvider($rpc, 20);
+                $eth = new Eth($provider);
                 $_private = hex2bin(Crypt::decryptString($account['private_key']));
+
+                // 从链上获取最新的 nonce (使用 pending 状态支持快速连续交易)
+                $current_nonce = $services->getNonce($eth, $account->address, 'pending');
+                $nonce_to_use = $current_nonce->toString();
+                Log::info("[task-trans:$task_trans->task_trans_id][nonce:$nonce_to_use]");
+
                 $hex_data = $task_trans->call_data;
                 if ($hex_data) {
                     if (!Str::startsWith($hex_data, '0x')) {
@@ -150,7 +157,7 @@ class ExecuteTaskJob implements ShouldQueue
                             throw new ShowMsgException('avasubscription 502');
                         }
                     }
-                    $txHash = $services->sendTransactionWithData($provider, $_private, $task_trans->to, $amount, $account->nonce, $hex_data);
+                    $txHash = $services->sendTransactionWithData($provider, $_private, $task_trans->to, $amount, $nonce_to_use, $hex_data);
                     if ($isMakerOrder) {
                         $task_trans->trans_hash = $txHash;
                         $task_trans->save();
@@ -163,15 +170,17 @@ class ExecuteTaskJob implements ShouldQueue
                     $contract = new Contract($provider, $template['abi']);
                     $contract = $contract->at($template->contract);
                     $params = array_merge([$task_trans['method']], array_values($args));
-                    $txHash = $services->sendTransaction($contract, $account->nonce, $_private, $params);
+                    $txHash = $services->sendTransaction($contract, $nonce_to_use, $_private, $params);
                 }
                 $trans_hash = $txHash;
                 Log::info("[task-trans:$task_trans->task_trans_id}][trans_hash:$trans_hash]");
                 $task_trans->trans_hash = $trans_hash;
                 $task_trans->status = TaskTrans::STATUS_WAIT;
-                $task_trans->nonce = $account->nonce;
+                $task_trans->nonce = $nonce_to_use;
                 $task_trans->error = '';
                 $task_trans->send_trans_time = time();
+                // 更新账户的 nonce 缓存（下次还是会从链上获取）
+                $account->nonce = intval($nonce_to_use) + 1;
             } catch (ShowMsgException $err) {
                 $task_trans->error = $err->getMessage();
                 Log::warning("[task-trans:$task_trans->task_trans_id][response:]" . $err->getMessage());
