@@ -51,7 +51,16 @@
                             <label for="call_data" class="col-md-4 col-form-label text-md-right">Call Data</label>
                             <div class="col-md-8">
                                 <input type="text" id="call_data" class="form-control" name="call_data" value=""
-                                       placeholder="data:,...">
+                                       placeholder="data:,... or 0x for simple transfer">
+                                <small class="form-text text-muted">Use "0x" for native token transfer</small>
+                            </div>
+                        </div>
+                        <div class="form-group row">
+                            <label for="to_address" class="col-md-4 col-form-label text-md-right">To Address</label>
+                            <div class="col-md-8">
+                                <input type="text" id="to_address" class="form-control" name="to_address" value=""
+                                       placeholder="0x... (Receiver address for transfer)">
+                                <small class="form-text text-muted">Required when Call Data is "0x"</small>
                             </div>
                         </div>
                         <div class="form-group row">

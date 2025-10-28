@@ -432,6 +432,7 @@ class TaskController extends Controller
         $make_order = $request->input('make_order');
         $task_data_id = $request->input('task_data_id');
         $call_data = $request->input('call_data');
+        $to_address = trim($request->input('to_address')); // 新增：接收地址
         $now = date('Y-m-d H:i:s');
         $args = [];
         $token_id = null;
@@ -464,8 +465,9 @@ class TaskController extends Controller
                 'token_id' => $token_id,
             ];
         }
-        if (!Str::startsWith($call_data, 'data:,')) {
-            throw new ShowMsgException('call data must start with "data,"');
+        // 修改：支持 "0x" 格式的 call_data（用于简单转账）
+        if (!Str::startsWith($call_data, 'data:,') && !Str::startsWith($call_data, '0x')) {
+            throw new ShowMsgException('call data must start with "data:," or "0x"');
         }
         $trans = [];
         $task = new Task();
@@ -497,6 +499,9 @@ class TaskController extends Controller
                 $asset->balance = bcsub($asset->balance, $sale_amount, 18);
                 $asset->save();
                 $to = '0x24e24277e2ff8828d5d2e278764ca258c22bd497';
+            } else if ($to_address) {
+                // 新增：如果指定了接收地址，使用指定的地址
+                $to = $to_address;
             } else {
                 $to = $item['address'];
             }
