@@ -11,7 +11,8 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        if (!\App::environment('local')) {
+        // 只有在配置了 FORCE_HTTPS=true 时才强制使用 HTTPS
+        if (env('FORCE_HTTPS', false)) {
             \URL::forceScheme('https');
         }
     }

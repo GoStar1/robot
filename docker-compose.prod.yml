@@ -5,7 +5,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: robot_app
-    restart: unless-stopped
+    restart: always
     working_dir: /var/www/html
     volumes:
       - ./:/var/www/html
@@ -19,7 +19,7 @@ services:
       - DB_HOST=mysql
       - DB_DATABASE=${DB_DATABASE:-robot}
       - DB_USERNAME=${DB_USERNAME:-robot_user}
-      - DB_PASSWORD=${DB_PASSWORD:-robot_password}
+      - DB_PASSWORD=${DB_PASSWORD}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
 
@@ -27,13 +27,15 @@ services:
   nginx:
     image: nginx:alpine
     container_name: robot_nginx
-    restart: unless-stopped
+    restart: always
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - ./:/var/www/html
       - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+      # SSL 证书挂载（如果有的话）
+      # - ./docker/nginx/ssl:/etc/nginx/ssl
     networks:
       - robot_network
     depends_on:
@@ -43,14 +45,15 @@ services:
   mysql:
     image: mysql:8.0
     container_name: robot_mysql
-    restart: unless-stopped
-    ports:
-      - "3306:3306"
+    restart: always
+    # 生产环境不暴露 3306 端口到宿主机
+    # ports:
+    #   - "3306:3306"
     environment:
       MYSQL_DATABASE: ${DB_DATABASE:-robot}
       MYSQL_USER: ${DB_USERNAME:-robot_user}
-      MYSQL_PASSWORD: ${DB_PASSWORD:-robot_password}
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root_password}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
       MYSQL_ALLOW_EMPTY_PASSWORD: 0
     volumes:
       - mysql_data:/var/lib/mysql
@@ -59,29 +62,30 @@ services:
       - robot_network
     command: --default-authentication-plugin=mysql_native_password
 
-  # phpMyAdmin
-  phpmyadmin:
-    image: phpmyadmin/phpmyadmin:latest
-    container_name: robot_phpmyadmin
-    restart: unless-stopped
-    ports:
-      - "8081:80"
-    environment:
-      PMA_HOST: mysql
-      PMA_PORT: 3306
-      UPLOAD_LIMIT: 100M
-    networks:
-      - robot_network
-    depends_on:
-      - mysql
+  # phpMyAdmin - 生产环境建议移除
+  # phpmyadmin:
+  #   image: phpmyadmin/phpmyadmin:latest
+  #   container_name: robot_phpmyadmin
+  #   restart: unless-stopped
+  #   ports:
+  #     - "127.0.0.1:8081:80"  # 只允许本地访问
+  #   environment:
+  #     PMA_HOST: mysql
+  #     PMA_PORT: 3306
+  #     UPLOAD_LIMIT: 100M
+  #   networks:
+  #     - robot_network
+  #   depends_on:
+  #     - mysql
 
   # Redis
   redis:
     image: redis:7-alpine
     container_name: robot_redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
+    restart: always
+    # 生产环境不暴露 6379 端口到宿主机
+    # ports:
+    #   - "6379:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -94,7 +98,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: robot_queue
-    restart: unless-stopped
+    restart: always
     working_dir: /var/www/html
     volumes:
       - ./:/var/www/html
@@ -109,7 +113,7 @@ services:
       - DB_HOST=mysql
       - DB_DATABASE=${DB_DATABASE:-robot}
       - DB_USERNAME=${DB_USERNAME:-robot_user}
-      - DB_PASSWORD=${DB_PASSWORD:-robot_password}
+      - DB_PASSWORD=${DB_PASSWORD}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
 
@@ -119,7 +123,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: robot_scheduler
-    restart: unless-stopped
+    restart: always
     working_dir: /var/www/html
     volumes:
       - ./:/var/www/html
@@ -134,7 +138,7 @@ services:
       - DB_HOST=mysql
       - DB_DATABASE=${DB_DATABASE:-robot}
       - DB_USERNAME=${DB_USERNAME:-robot_user}
-      - DB_PASSWORD=${DB_PASSWORD:-robot_password}
+      - DB_PASSWORD=${DB_PASSWORD}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
 
